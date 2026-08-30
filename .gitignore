@@ -1,0 +1,48 @@
+# === Secretos: NUNCA versionar ===
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+credentials*.json
+
+# === Dependencias / entornos ===
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# === Builds / artefactos ===
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+coverage/
+.vite/
+
+# === Datos / backups / dumps ===
+backups/
+*.sqlite
+*.sqlite3
+*.dump
+*.sql.gz
+
+# === Binarios pesados (los grandes viven fuera del repo) ===
+*.pdf
+*.jam
+*.zip
+*.tar.gz
+
+# === OS / editores ===
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/

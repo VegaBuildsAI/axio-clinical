@@ -1,0 +1,92 @@
+# axio-clinical-local — STACK DEV / SANDBOX (Michael).
+# Corre en paralelo a prod (docker-compose.yml) en la MISMA Dell:
+#   - Puertos +10 (motor 8010, consola-api 8011, consola-web 5183) — sin colisión con prod.
+#   - Código montado desde los worktrees *-dev/ (rama feat/n3-truth-state).
+#   - SIN servicio postgres: comparte el Postgres SoR de prod por host.docker.internal:5433.
+#   - SIN `alembic upgrade`: el esquema lo migra SOLO prod (gobernanza BD compartida §5.1).
+#   - oncall-sim PROPIO (stub sin estado) para no cruzar webhooks N3 con prod.
+#
+# ARRANQUE (obligatorio --env-file .env.dev para la interpolación de ${...}):
+#   docker compose --env-file .env.dev -f docker-compose.dev.yml up -d --build
+# NO exponer estos puertos en tailscale serve/ACL: el sandbox es invisible por diseño.
+
+name: axio-axio-clinical-agent-dev
+
+services:
+  motor:
+    build:
+      context: ../axio-clinical-motor-clinico-dev
+      dockerfile_inline: |
+        FROM python:3.11-slim
+        WORKDIR /app
+        RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+        COPY pyproject.toml alembic.ini ./
+        COPY app/ ./app/
+        RUN pip install --no-cache-dir ".[dev]"
+        CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # DEV: uvicorn directo, SIN `alembic upgrade head` (prod es la única fuente de migraciones).
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    env_file: .env.dev
+    ports:
+      - "8010:8000"
+    volumes:
+      - ../axio-clinical-motor-clinico-dev:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  consola-api:
+    build:
+      context: ../axio-clinical-console-dev
+      dockerfile: infra/Dockerfile.backend
+    # DEV: sin `alembic upgrade` (mismo criterio; el esquema de axio_clinical_console lo migra prod).
+    command: sh -c "uvicorn axio_clinical_console.main:app --reload --host 0.0.0.0 --port 8000"
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-axio_clinical}:${POSTGRES_PASSWORD}@host.docker.internal:5433/axio_clinical_console
+      MOTOR_DATABASE_URL: ${MOTOR_DATABASE_URL}
+      MOTOR_IDENTITY_KEY: ${AXIO_CLINICAL_IDENTITY_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      MOTOR_INGEST_TOKEN: ${MOTOR_INGEST_TOKEN}
+      API_BASE_URL: http://localhost:8011
+      APP_BASE_URL: http://localhost:5183
+    volumes:
+      - ../axio-clinical-console-dev/backend:/app
+    ports:
+      - "8011:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  consola-web:
+    build:
+      context: ../axio-clinical-console-dev
+      dockerfile: infra/Dockerfile.frontend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8011
+    volumes:
+      - ../axio-clinical-console-dev/frontend:/app
+      - consola_node_modules_dev:/app/node_modules
+    ports:
+      - "5183:5173"
+    depends_on:
+      - consola-api
+
+  # oncall-sim propio del stack dev (D5: 2xx = recibido, NO atención humana).
+  oncall-sim:
+    image: python:3.11-slim
+    command: python /oncall_sim.py
+    volumes:
+      - ./scripts/oncall_sim.py:/oncall_sim.py:ro
+
+volumes:
+  consola_node_modules_dev:

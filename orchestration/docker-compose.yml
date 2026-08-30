@@ -1,0 +1,113 @@
+# axio-clinical-local — AXIO Clinical Agent completa en la Dell, sin nube.
+# Los build.context apuntan a los repos fuente (../axio-clinical-motor-clinico,
+# ../axio-clinical-console): se consultan, no se copian (evita divergencia).
+# Ollama corre en el HOST (Windows, Arc 140V vía Vulkan) — NO en Docker.
+# Exportable al server GPU cambiando solo variables de entorno (.env).
+
+name: axio-clinical-local
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-axio_clinical}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: axio_clinical_motor
+    ports:
+      - "5433:5432"   # 5432 lo usa el postgis de vega — no tocar
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-axio_clinical} -d axio_clinical_motor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  motor:
+    build:
+      context: ../axio-clinical-motor-clinico
+      # Dockerfile propio del stack local: igual al del repo pero instala ".[dev]"
+      # para poder correr los 188 tests dentro del contenedor.
+      dockerfile_inline: |
+        FROM python:3.11-slim
+        WORKDIR /app
+        RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+        COPY pyproject.toml alembic.ini ./
+        COPY app/ ./app/
+        RUN pip install --no-cache-dir ".[dev]"
+        CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Código vivo + tests/ desde el repo fuente (rama feat/dockerfile-cloudrun)
+      - ../axio-clinical-motor-clinico:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  consola-api:
+    build:
+      context: ../axio-clinical-console
+      dockerfile: infra/Dockerfile.backend
+    command: sh -c "alembic upgrade head && uvicorn axio_clinical_console.main:app --reload --host 0.0.0.0 --port 8000"
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-axio_clinical}:${POSTGRES_PASSWORD}@postgres:5432/axio_clinical_console
+      # Fase 3 (D2/D4): la consola LEE la BD del motor con rol solo-SELECT y
+      # descifra el hilo con la misma llave del motor.
+      MOTOR_DATABASE_URL: ${MOTOR_DATABASE_URL}
+      MOTOR_IDENTITY_KEY: ${AXIO_CLINICAL_IDENTITY_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      MOTOR_INGEST_TOKEN: ${MOTOR_INGEST_TOKEN}
+      API_BASE_URL: http://localhost:8001
+      APP_BASE_URL: http://localhost:5173
+    volumes:
+      - ../axio-clinical-console/backend:/app
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  consola-web:
+    build:
+      context: ../axio-clinical-console
+      dockerfile: infra/Dockerfile.frontend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8001
+    volumes:
+      - ../axio-clinical-console/frontend:/app
+      - consola_node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - consola-api
+
+  # Simulador del on-call de AXIO Clinical (no existe el real — bloqueador humano §6).
+  # Recibe el webhook de crisis N3, responde 2xx y loguea el payload.
+  # D5: un 2xx = "un sistema lo recibió", NO "un humano se hizo cargo".
+  oncall-sim:
+    image: python:3.11-slim
+    command: python /oncall_sim.py
+    volumes:
+      - ./scripts/oncall_sim.py:/oncall_sim.py:ro
+
+volumes:
+  pgdata:
+  consola_node_modules:

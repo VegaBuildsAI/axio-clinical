@@ -1,0 +1,15 @@
+%% AXIO Clinical — flujo end-to-end (fuente Mermaid)
+%% Render: https://mermaid.live o cualquier viewer Mermaid
+flowchart TD
+    A["APK paciente :8081<br/>(Expo / RN web)"] -->|JWT paciente| V["Vega :4000<br/>NestJS · /api/axio-clinical-agent/infer"]
+    V -->|x-service-token: vega| M["Motor Clínico :8000<br/>FastAPI · /axio-clinical-agent/infer"]
+    M -->|prompt| O["Ollama host :11434<br/>qwen3 (razonamiento/triaje)"]
+    M -->|SoR cifrado| PG[("Postgres :5433<br/>axio_clinical_motor<br/>SoR seudonimizado ax_*")]
+    M -->|crisis N3<br/>determinista, pre-LLM| ON["oncall-sim<br/>webhook crisis"]
+    M -.->|ingesta observación| C["Consola api :8001 / web :5173"]
+    C -->|rol console_ro · solo SELECT| PG
+
+    classDef svc fill:#1E293B,stroke:#0F172A,color:#fff;
+    classDef store fill:#334155,stroke:#0F172A,color:#fff;
+    class A,V,M,O,ON,C svc;
+    class PG store;
